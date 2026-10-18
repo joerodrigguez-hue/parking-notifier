@@ -49,6 +49,60 @@ def snapshot():
     return jsonify({"status": "ok"})
 
 
+def fmt_pesos(n):
+    # 1535 -> "$1.535" (formato argentino)
+    return "$" + f"{n:,.0f}".replace(",", ".")
+
+
+@app.route("/dolar")
+def dolar():
+    if request.args.get("key") != SECRET_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+
+    # Ej: /dolar?key=...&tipos=blue,oficial,bolsa   (por defecto: blue y oficial)
+    tipos = request.args.get("tipos", "blue,oficial").split(",")
+    nombres = {
+        "oficial": "Oficial",
+        "blue": "Blue",
+        "bolsa": "MEP",
+        "contadoconliqui": "CCL",
+        "tarjeta": "Tarjeta",
+        "mayorista": "Mayorista",
+        "cripto": "Cripto",
+    }
+
+    try:
+        resp = requests.get("https://dolarapi.com/v1/dolares", timeout=15)
+        resp.raise_for_status()
+        cotizaciones = {d["casa"]: d for d in resp.json()}
+    except Exception as e:
+        return jsonify({"error": f"no pude obtener la cotizacion: {e}"}), 500
+
+    lineas = []
+    for t in tipos:
+        t = t.strip()
+        d = cotizaciones.get(t)
+        if d:
+            lineas.append(
+                f"{nombres.get(t, t)}: compra {fmt_pesos(d['compra'])} / venta {fmt_pesos(d['venta'])}"
+            )
+
+    if not lineas:
+        return jsonify({"error": "tipo de dolar no encontrado"}), 400
+
+    try:
+        requests.post(
+            f"https://ntfy.sh/{NTFY_TOPIC}",
+            data="\n".join(lineas).encode("utf-8"),
+            headers={"Title": "Dolar hoy"},
+            timeout=20,
+        )
+    except Exception as e:
+        return jsonify({"error": f"fallo el envio: {e}"}), 500
+
+    return jsonify({"status": "ok", "enviado": lineas})
+
+
 @app.route("/")
 def home():
     return "Servidor activo. Usa /snapshot?key=TU_CLAVE para pedir una foto."
