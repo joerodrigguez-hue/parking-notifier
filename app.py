@@ -1,4 +1,5 @@
 import os
+import threading
 from flask import Flask, request, jsonify
 import requests
 from pyezvizapi.client import EzvizClient
@@ -14,6 +15,28 @@ CAMERA_CHANNEL = int(os.environ.get("CAMERA_CHANNEL", "1"))
 NTFY_TOPIC = os.environ["NTFY_TOPIC"]
 SECRET_KEY = os.environ["SECRET_KEY"]
 
+# Se guarda UNA sola sesion de EZVIZ y se reutiliza en todos los pedidos.
+# Antes se hacia un login nuevo por cada foto, y EZVIZ cuenta cada login como
+# un "terminal" nuevo (maximo 10), asi que la cuenta se llenaba y daba error 1069.
+_client = None
+_client_lock = threading.Lock()
+
+
+def get_client():
+    global _client
+    with _client_lock:
+        if _client is None:
+            c = EzvizClient(account=EZVIZ_EMAIL, password=EZVIZ_PASSWORD, url=EZVIZ_REGION)
+            c.login()
+            _client = c
+        return _client
+
+
+def reset_client():
+    global _client
+    with _client_lock:
+        _client = None
+
 
 @app.route("/snapshot")
 def snapshot():
@@ -23,11 +46,12 @@ def snapshot():
 
     tmp_path = "/tmp/snapshot.jpg"
 
-    client = EzvizClient(account=EZVIZ_EMAIL, password=EZVIZ_PASSWORD, url=EZVIZ_REGION)
     try:
-        client.login()
+        client = get_client()
         client.save_image(DEVICE_SERIAL, tmp_path, channel=CAMERA_CHANNEL)
     except Exception as e:
+        # Si algo fallo, se descarta la sesion; el proximo pedido hace un login limpio.
+        reset_client()
         return jsonify({"error": str(e)}), 500
 
     with open(tmp_path, "rb") as f:
